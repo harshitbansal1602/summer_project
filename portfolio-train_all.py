@@ -9,6 +9,7 @@ from keras import losses
 from keras.layers import Activation,Input,Conv2D,LSTM,Add,Dense,TimeDistributed
 import keras.backend as K
 from keras.engine.topology import Layer
+import matplotlib.pyplot as plt
 
 
 columns = np.array(['Date','Open Price','High Price','Low Price','Close Price','No. of Trades'])
@@ -17,7 +18,7 @@ all_sizes = np.array([])
 all_data = pd.DataFrame()
 
 print 'Reading data....'
-files = glob.glob("csv_high/*.csv")
+files = glob.glob("csv_high_new/*.csv")
 small_date = pd.read_csv(files[0], usecols=['Date']).values
 for f in files:
     date = pd.read_csv(f, usecols=['Date']).values
@@ -37,13 +38,9 @@ def make_inputs(filepath):
     D = D.reset_index(drop=True)
     Res = pd.DataFrame()
     ticker = get_ticker(filepath)
-
-    #Res['c_2_o'] = ret(D['Open Price'],D['Close Price'])
-    Res['open'] = D['Open Price']
+    Res['open'] = ret(D['Open Price'],D['Open Price'].shift(-1)).fillna(0)
     Res['h_2_o'] = ret(D['Open Price'],D['High Price'])
     Res['l_2_o'] = ret(D['Open Price'],D['Low Price'])
-    #Res['c_2_h'] = ret(D['Close Price'],D['High Price'])
-    #Res['h_2_l'] = ret(D['High Price'],D['Low Price'])
     Res['c1_c0'] = ret(D['Close Price'],D['Close Price'].shift(-1)).fillna(0) #todays return
     Res['vol'] = zscore(D['No. of Trades'].shift(-1)).fillna(0)
     Res['ticker'] = ticker
@@ -61,17 +58,16 @@ mi = P.columns.tolist()
 new_ind = pd.Index(e[1] +'_' + e[0] for e in mi)
 P.columns = new_ind
 P = P.sort_index(axis=1,ascending=True) # Sort by columns
-
+print P
 target_cols = list(filter(lambda x: 'c1_c0' in x, P.columns.values))
 #c_2_o_cols  = list(filter(lambda x: 'c_2_o' in x, P.columns.values))
-open_cols  = list(filter(lambda x: 'open' in x, P.columns.values))
+open_cols   = list(filter(lambda x: 'open' in x, P.columns.values))
 h_2_o_cols  = list(filter(lambda x: 'h_2_o' in x, P.columns.values))
 l_2_o_cols  = list(filter(lambda x: 'l_2_o' in x, P.columns.values))
 vol_cols    = list(filter(lambda x: 'vol' in x, P.columns.values))
 
 InputDF = P[open_cols].values
 shape   = InputDF.shape
-#InputDF = np.append(InputDF,P[h_2_o_cols].values)
 InputDF = np.append(InputDF,P[h_2_o_cols].values)
 InputDF = np.append(InputDF,P[l_2_o_cols].values)
 InputDF = np.append(InputDF,P[vol_cols].values)
@@ -99,19 +95,32 @@ def data_o(x,length):
 
 
 #hyper parameters
+
 output_channels = 1
-kernel_size = [4,4]
-lstm_high_hs = 295
-lstm_low_hs = 295
-hidden_size_lstm = 300
+kernel_size = [5,5]
+lstm_high_hs = 50
+lstm_low_hs = 50
+hidden_size_lstm = 150
 sequence_length = 30
-hidden_size_ff = 295
+hidden_size_ff = 317
 batch_size = 50
 output_size = hidden_size_ff
-adam = optimizers.Adam(lr=0.01, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+adam = optimizers.Adam(lr = .1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.1)
+tensorBoard = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, write_graph=True)
 
+n_days = -300
+n_odays = int(n_days*(0.2))
 input_data = data_i(input_data,sequence_length)
 output_data = data_o(output_data,sequence_length)
+
+input_open = input_data[n_days:,:,:,0]
+input_vol = input_data[n_days:,:,:,3]
+input_high = input_data[n_days:,:,:,1]
+input_low = input_data[n_days:,:,:,2]
+input_close= output_data[n_days:,:,:]
+output_open = input_data[n_odays:,:,:,0]
+output_vol = input_data[n_odays:,:,:,3]
+
 
 class Add(Layer):
 
@@ -123,21 +132,41 @@ class Add(Layer):
         pass
 
     def call(self, x):
-        return K.tf.reduce_sum(x, axis=self.axis)
+        return tf.reduce_sum(x, axis=self.axis)
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0], input_shape[1], input_shape[2])
 
+class Norm(Layer):
+
+    def __init__(self, axis, **kwargs):
+        self.axis = axis
+        super(Norm, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        pass
+
+    def call(self, x):
+    	ndim = K.ndim(x)
+    	if ndim == 2:
+        	return K.softmax(x)
+        elif ndim > 2:
+        	e = K.relu(x,alpha=0.,max_value=None) #relu
+        	# e = K.exp(x)/(K.exp(x)+1) #sigmoid
+        	s = K.sum(e, axis=self.axis, keepdims=True)
+        	return e / s
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+
+
 def l_portfolio(y_true,y_pred):
-    pred_return = 1 - K.exp(y_true)
-    total_return = tf.multiply(y_pred, pred_return)
-    loss = -tf.reduce_mean(total_return)
+    true_return = K.exp(y_true) - 1 #since we want to maximize this
+    total_return = tf.multiply(y_pred, true_return)
+    # print total_return.shape = [?,sequence_length,output_size]
+    loss = tf.reduce_mean(total_return[:,-1,:])
     return loss
-
-
-def mean_squared_error(y_true, y_pred):
-    return K.mean(K.square(y_pred - y_true), axis=-1)
-
 
 def days_return(y_true,y_pred):
     pred_return = 1 - K.exp(y_true)
@@ -153,9 +182,13 @@ x = Input(shape=(sequence_length,output_size))
 
 vol_x = Input(shape=(sequence_length,output_size))
 
-open_high = LSTM(lstm_high_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True,name='open_high')(x)
+open_high = LSTM(lstm_high_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True)(x)
 
-open_low = LSTM(lstm_low_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True,name='open_low')(x)
+open_high = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0),name='open_high')(open_high)
+
+open_low = LSTM(lstm_low_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True)(x)
+
+open_low = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0),name='open_low')(open_low)
 
 data = keras.layers.Concatenate(axis=-1)([open_high,open_low,vol_x]) #remove or keep x?
 
@@ -169,15 +202,10 @@ output_lstm = LSTM(hidden_size_lstm,recurrent_dropout=0.2, dropout=0.5, return_s
 
 output_f = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0))(output_lstm)
 
-portfolio = Activation('softmax',name='portfolio')(output_f)
+portfolio = Norm(axis=-1,name='portfolio')(output_f)
 
 model = Model(inputs= [x,vol_x],outputs = [open_high,open_low,portfolio])
-model.compile(loss= ['mean_squared_error','mean_squared_error',l_portfolio], optimizer = adam,metrics ={'portfolio': days_return},loss_weights=[0.2, 0.2,1.])
-model.fit(x=[input_data[:,:,:,0],input_data[:,:,:,3]],y=[input_data[:,:,:,1],input_data[:,:,:,2],output_data],verbose=2,batch_size=batch_size,validation_split = .1,epochs=500)
-model.save('saved/')
-#work to do
-#make losses
-#vol should be pred? or taken a day back data
-#weighting of losses 
-#make input system better
+model.compile(loss= ['mean_squared_error','mean_squared_error',l_portfolio], optimizer = adam,metrics ={'portfolio': days_return},loss_weights=[1., 1.,1.])
+model.fit(x=[input_open,input_vol],y=[input_high,input_low,input_close],verbose=2,batch_size=batch_size,validation_split = .2,epochs=50,callbacks=[tensorBoard])
+model.save_weights('weights.h5')
 
