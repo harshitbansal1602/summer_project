@@ -14,8 +14,9 @@ files_backup = [get_ticker(k) for k in files_backup]
 files_remove =  set(files_new) - set(files_backup)
 
 def remove_files(files_remove):
-    filepath = 'csv_high_new/' + f + '.csv'
-    os.remove(filepath)
+	for f in files_remove:
+	    filepath = 'csv_high_new/' + str(f) + '.csv'
+	    os.remove(filepath)
 
 remove_files(files_remove)
 # print files_remove

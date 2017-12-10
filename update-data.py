@@ -4,24 +4,28 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+from dateutil.parser import parse
 
 import pandas as pd
 import time
 import os
 import datetime
-
+import glob
 
 now = datetime.datetime.now()
 
-data = pd.read_csv("/home/harshit/Desktop/Project_summer/companies_high.csv")
-companies = data['Security Code']
+files = glob.glob("csv_high_new/*.csv")
+def get_ticker(filepath):
+  filepath = filepath[-10:-4]
+  return filepath
 # create a new Firefox session
+companies = [get_ticker(file) for file  in files] 
 driver = webdriver.Firefox()
 driver.implicitly_wait(5)
 
 
 def update(company):
-	
+
 	driver.get("http://www.bseindia.com/markets/equity/EQReports/StockPrcHistori.aspx?expandable=7&flag=0")
 	search_field = driver.find_element_by_id("ctl00_ContentPlaceHolder1_GetQuote1_smartSearch")
 	date_initial_field = driver.find_element_by_id("ctl00_ContentPlaceHolder1_txtFromDate")
@@ -51,15 +55,20 @@ def update(company):
 		table = span.find('table')
 		df = pd.read_html(str(table))[0]
 		return df.iloc[-1]
-		
 
 # navigate to the application home page
 # enter search keyword and submit
 
 for company in companies:
 	count = 0
-	file_path = "/home/harshit/Downloads/" + str(company) + ".csv"
+	file_path = "csv_high_new/" + str(company) + ".csv"
 	df = update(company)
-	with open(file_path, 'a') as f:
-		df.to_csv(f, header=False)
-
+	new = df.values
+	new[0] = parse(new[0]).strftime('%d-%B-%Y')
+	old = pd.read_csv(file_path)
+	with open(file_path, 'w') as f:
+		old.loc[-1] = new  # adding a row
+		old.index = old.index + 1  # shifting index
+		old = old.sort_index()  # sorting by index
+		old.to_csv(f)
+	print company

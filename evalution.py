@@ -1,5 +1,4 @@
 import tensorflow as tf
-import glob
 import pandas as pd
 import numpy as np
 import keras
@@ -10,71 +9,25 @@ from keras.layers import Activation,Input,Conv2D,LSTM,Add,Dense,TimeDistributed
 import keras.backend as K
 from keras.engine.topology import Layer
 import matplotlib.pyplot as plt
+import indicators
+import file_read
+
+P = file_read.read_data()
 
 
-columns = np.array(['Date','Open Price','High Price','Low Price','Close Price','No. of Trades'])
-files = np.array([])
-all_sizes = np.array([])
-all_data = pd.DataFrame()
-
-print 'Reading data....'
-files = glob.glob("csv_high_new/*.csv")
-small_date = pd.read_csv(files[0], usecols=['Date']).values
-for f in files:
-    date = pd.read_csv(f, usecols=['Date']).values
-    small_date = np.intersect1d(small_date, date)
-ret = lambda x,y: np.log(y/x) #Log return 
-zscore = lambda x:(x -x.mean())/x.std() # zscore
-
-def get_ticker(filepath):
-  filepath = filepath[-10:-4]
-  return filepath
-
-def make_inputs(filepath):
-    D = pd.read_csv(filepath, usecols=columns)
-    #Load the dataframe with headers
-    D = D.drop_duplicates(subset = ['Date'])
-    D =  D.loc[D['Date'].isin(small_date)]
-    D = D.reset_index(drop=True)
-    Res = pd.DataFrame()
-    ticker = get_ticker(filepath)
-
-    #Res['c_2_o'] = ret(D['Open Price'],D['Close Price'])
-    Res['open'] = ret(D['Open Price'],D['Open Price'].shift(-1)).fillna(0)
-    Res['h_2_o'] = ret(D['Open Price'],D['High Price'])
-    Res['l_2_o'] = ret(D['Open Price'],D['Low Price'])
-    #Res['c_2_h'] = ret(D['Close Price'],D['High Price'])
-    #Res['h_2_l'] = ret(D['High Price'],D['Low Price'])
-    Res['c1_c0'] = ret(D['Close Price'],D['Close Price'].shift(-1)).fillna(0) #todays return
-    Res['vol'] = zscore(D['No. of Trades'].shift(-1)).fillna(0)
-    Res['ticker'] = ticker
-    return Res
-
-for f in files:
-  Res = make_inputs(f)
-  all_data = all_data.append(Res)
-
-
-
-pivot_columns = all_data.columns[:-1]
-P = all_data.pivot_table(index=all_data.index,columns='ticker',values=pivot_columns)
-mi = P.columns.tolist()
-new_ind = pd.Index(e[1] +'_' + e[0] for e in mi)
-P.columns = new_ind
-P = P.sort_index(axis=1,ascending=True) # Sort by columns
-
-target_cols = list(filter(lambda x: 'c1_c0' in x, P.columns.values))
-#c_2_o_cols  = list(filter(lambda x: 'c_2_o' in x, P.columns.values))
-open_cols  = list(filter(lambda x: 'open' in x, P.columns.values))
+target_cols = list(filter(lambda x: 'return' in x, P.columns.values))
+open_cols  = list(filter(lambda x: 'o1_o0' in x, P.columns.values))
 h_2_o_cols  = list(filter(lambda x: 'h_2_o' in x, P.columns.values))
 l_2_o_cols  = list(filter(lambda x: 'l_2_o' in x, P.columns.values))
-vol_cols    = list(filter(lambda x: 'vol' in x, P.columns.values))
+zvol_cols    = list(filter(lambda x: 'vol' in x, P.columns.values))
+
+
 
 InputDF = P[open_cols].values
 shape   = InputDF.shape
 InputDF = np.append(InputDF,P[h_2_o_cols].values)
 InputDF = np.append(InputDF,P[l_2_o_cols].values)
-InputDF = np.append(InputDF,P[vol_cols].values)
+InputDF = np.append(InputDF,P[zvol_cols].values)
 
 InputDF  =  InputDF.reshape((4,shape[0],shape[1]))
 InputDF = np.transpose(InputDF, [1,2,0])
@@ -82,6 +35,7 @@ TargetDF = P[target_cols]
 
 input_data = InputDF
 output_data = TargetDF.values
+
 
 def data_i(x,length):
     res = np.zeros((x.shape[0]-length,length,x.shape[1],x.shape[2]))
@@ -99,28 +53,22 @@ def data_o(x,length):
 
 
 #hyper parameters
+k=10
 output_channels = 1
 kernel_size = [5,5]
-lstm_high_hs = 50
-lstm_low_hs = 50
-hidden_size_lstm = 150
-sequence_length = 15
-hidden_size_ff = 317
-batch_size = 50
+lstm_high_hs = 20
+lstm_low_hs = 20
+hidden_size_lstm = 30
+sequence_length = 30
+hidden_size_ff = 319
+batch_size = 20
 output_size = hidden_size_ff
 adam = optimizers.Adam(lr=10, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
 
-n_days = -300
-n_odays = int(n_days*(0.2))
+n_days = -200
+n_odays = int(n_days*(0.1))
 input_data = data_i(input_data,sequence_length)
 output_data = data_o(output_data,sequence_length)
-input_open = input_data[n_days:,:,:,0]
-input_vol = input_data[n_days:,:,:,3]
-input_high = input_data[n_days:,:,:,1]
-input_low = input_data[n_days:,:,:,2]
-input_close= output_data[n_days:,:,:]
-output_open = input_data[n_odays:,:,:,0]
-output_vol = input_data[n_odays:,:,:,3]
 
 
 class Add(Layer):
@@ -161,42 +109,34 @@ class Norm(Layer):
         return input_shape
 
 
-def l_portfolio(y_true,y_pred):
-    pred_return = 1 - K.exp(y_true)
-    total_return = tf.multiply(y_pred, pred_return)
-    loss = -tf.reduce_mean(total_return)
-    return loss
-
-
-def mean_squared_error(y_true, y_pred):
-    return K.mean(K.square(y_pred - y_true), axis=-1)
-
-
 def days_return(y_true,y_pred):
     pred_return = 1 - np.exp(y_true)
     total_return = np.multiply(y_pred, pred_return)
-    days_return = np.sum(total_return[:,-1,:],axis=-1)
+    days_return = np.sum(total_return[-1,-1,:],axis=-1)
     return days_return
-
 
 
 #model
 #x = Input(shape=(sequence_length,output_size,4))
 x = Input(shape=(sequence_length,output_size))
 
-vol_x = Input(shape=(sequence_length,output_size))
+zvol_x = Input(shape=(sequence_length,output_size))
 
-open_high = LSTM(lstm_high_hs, return_sequences=True)(x)
+open_high = LSTM(lstm_high_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True)(x)
 
-open_high = Dense(hidden_size_ff,activation = 'elu',kernel_regularizer = keras.regularizers.l2(1.0),name='open_high')(open_high)
+open_high = Dense(hidden_size_ff,activation = 'tanh',kernel_regularizer = keras.regularizers.l2(1.0),name='open_high')(open_high)
 
 open_low = LSTM(lstm_low_hs,recurrent_dropout=0.2, dropout=0.5, return_sequences=True)(x)
 
-open_low = Dense(hidden_size_ff,activation = 'elu',kernel_regularizer = keras.regularizers.l2(1.0),name='open_low')(open_low)
+open_low = Dense(hidden_size_ff,activation = 'tanh',kernel_regularizer = keras.regularizers.l2(1.0),name='open_low')(open_low)
 
-data = keras.layers.Concatenate(axis=-1)([open_high,open_low,vol_x]) #remove or keep x?
+macd = Input(shape=(sequence_length,output_size))
+mov_avg = Input(shape=(sequence_length,output_size))
+rsi = Input(shape=(sequence_length,output_size))
 
-data = keras.layers.core.Reshape([sequence_length,output_size,3])(data)
+data = keras.layers.Concatenate(axis=-1)([open_high,open_low,zvol_x,macd,mov_avg,rsi])
+
+data = keras.layers.core.Reshape([sequence_length,output_size,6])(data)
 
 output_conv = Conv2D(data_format="channels_last",filters = output_channels,kernel_regularizer = keras.regularizers.l2(1.0) ,kernel_size = kernel_size,padding = "same",activation = 'relu')(data)
 
@@ -204,15 +144,40 @@ input_lstm = Add(axis=-1)(output_conv)
 
 output_lstm = LSTM(hidden_size_lstm,recurrent_dropout=0.2, dropout=0.5, return_sequences=True)(input_lstm)
 
-output_f = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0))(output_lstm)
+output_lstm = keras.layers.Dropout(.2)(output_lstm)
 
 
-portfolio = Norm(axis=-1,name='portfolio')(output_f)
+# portfolio = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0))(output_lstm)
+model_output = Dense(hidden_size_ff,activation = 'tanh',kernel_regularizer = keras.regularizers.l2(1.0))(output_lstm)
 
-model = Model(inputs= [x,vol_x],outputs = [open_high,open_low,portfolio])
+# final_output = Dense(hidden_size_ff,activation = 'relu',kernel_regularizer = keras.regularizers.l2(1.0))(model_output)
+
+portfolio = Norm(axis=-1,name='portfolio')(model_output)
+
+model = Model(inputs= [x,zvol_x,macd,mov_avg,rsi],outputs = [open_high,open_low,portfolio])
 model.load_weights('weights.h5')
-#model.compile(loss= ['mean_squared_error','mean_squared_error',l_portfolio], optimizer = adam,metrics ={'portfolio': days_return},loss_weights=[0.2, 0.2,1.])
-outputs = model.predict(x = [output_open,output_vol],batch_size=1,verbose = 1)
+returns = []
+
+macd = data_o(indicators.macd(P),sequence_length)
+mov_avg,_ = indicators.mov_avg(k,P)
+mov_avg = data_o(mov_avg,sequence_length)
+rsi = data_o(indicators.rsi(P),sequence_length)
+
+for k in xrange(1,20):
+    
+    output_open = input_data[n_odays-k:-k,:,:,0]
+    output_zvol = input_data[n_odays-k:-k,:,:,3]
+    output_macd = macd[n_odays-k:-k]
+    output_mov_avg = mov_avg[n_odays-k:-k]
+    output_rsi = rsi[n_odays-k:-k]
+    
+    outputs = model.predict(x = [output_open,output_zvol,output_macd,output_mov_avg,output_rsi],verbose = 1)
+
+    o_output = output_data[n_odays-k:-k,:,:].astype(np.float32)
+    
+    returns.append(days_return(o_output,outputs[2])*100)
+
+    
 
 def mvg_avg(returns,K):
 	avg = np.zeros((len(returns) - K))
@@ -223,13 +188,14 @@ def mvg_avg(returns,K):
 
 
 
-K = 5 #moving average constant
-n = 60 #consider how many days data in result
-o_output = output_data[-n:,:,:].astype(np.float32)
-returns = days_return(o_output,outputs[2])
-mvg_avg = mvg_avg(returns,K)
-plt.plot(outputs[2][-1,-1,:])
+K = 10 #moving average constant
+
+#mvg_avg = mvg_avg(returns,K)
+
+# plt.plot(outputs[2][-1,-1,:])
 # plt.plot(mvg_avg)
+print np.mean(returns)
+plt.plot(returns)
 plt.show()
-np.savetxt("Return.csv", returns, delimiter=",")
+# np.savetxt("Return.csv", returns, delimiter=",")
 

@@ -3,54 +3,56 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import glob
 from statsmodels.graphics.tsaplots import plot_pacf
+from statsmodels.tsa.stattools import adfuller
 from statsmodels.graphics.tsaplots import plot_acf
+import time
+import datetime
+import file_read
+import indicators
 
-columns = np.array(['Date','Close Price'])
-files = np.array([])
-all_sizes = np.array([])
-all_data = pd.DataFrame()
 
-print 'Reading data....'
-files = glob.glob("csv_high_new/*.csv")
-small_date = pd.read_csv(files[0], usecols=['Date']).values
+P = file_read.read_data()
+target_cols = list(filter(lambda x: 'return' in x, P.columns))
+open_cols   = list(filter(lambda x: 'open' in x, P.columns))
+h_2_o_cols  = list(filter(lambda x: 'vol' in x, P.columns))
+stat_cols  = list(filter(lambda x: 'close' in x, P.columns))
 
-for f in files:
-    date = pd.read_csv(f, usecols=['Date']).values
-    small_date = np.intersect1d(small_date, date)
+InputDF = P[open_cols].values
+shape   = InputDF.shape
+InputDF = np.append(InputDF,P[h_2_o_cols].values)
+InputDF = np.append(InputDF,P[stat_cols].values)
 
-def get_ticker(filepath):
-  filepath = filepath[-10:-4]
-  return filepath
+InputDF  =  InputDF.reshape((3,shape[0],shape[1]))
+InputDF = np.transpose(InputDF, [1,2,0])
+TargetDF = P[target_cols]
 
-def make_inputs(filepath):
-    D = pd.read_csv(filepath, usecols=columns)
-    #Load the dataframe with headers
-    D = D.drop_duplicates(subset = ['Date'])
-    D =  D.loc[D['Date'].isin(small_date)]
-    D = D.reset_index(drop=True)
-    Res = pd.DataFrame()
-    ticker = get_ticker(filepath)
-    Res['c1_c0'] = D['Close Price']
-    Res['ticker'] = ticker
-    return Res
 
-for f in files:
-  Res = make_inputs(f)
-  all_data = all_data.append(Res)
+input_data = InputDF
+output_data = TargetDF.values
 
-pivot_columns = all_data.columns[:-1]
-P = all_data.pivot_table(index=all_data.index,columns='ticker',values=pivot_columns)
-mi = P.columns.tolist()
-new_ind = pd.Index(e[1] +'_' + e[0] for e in mi)
-P.columns = new_ind
-P = P.sort_index(axis=1,ascending=True) # Sort by columns
+def data_i(x,length):
+    res = np.zeros((x.shape[0]-length,length,x.shape[1],x.shape[2]))
+    for i in xrange(x.shape[0]-length):
+        new_data = x[i:i+length,:,:]
+        res[i] = new_data
+    return res
 
-target_cols = list(filter(lambda x: 'c1_c0' in x, P.columns.values))
+def data_o(x,length):
+    res = np.zeros((x.shape[0]-length,length,x.shape[1]))
+    for i in xrange(x.shape[0]-length):
+        new_data = x[i:i+length,:]
+        res[i] = new_data
+    return res
 
+sequence_length = 30
+input_data = data_i(input_data,sequence_length)
+output_data = data_o(output_data,sequence_length)
+input_open = input_data[-2:,:,0,0]
 returns = P[target_cols].values
-returns = returns[:,1]
-K = 5#Moving averages span 
+returns = returns[-400:,4]
+K = 10#Moving averages span 
 lag = 1000
+
 def mvg_avg(returns,K):
 	avg = np.zeros((len(returns) - K))
 	for i in xrange(len(returns) - K):
@@ -58,28 +60,73 @@ def mvg_avg(returns,K):
 	return avg
 
 
-def auto_corr(returns,k):
-	n = len(returns) #total number of points
-	avg = np.mean(returns)
-	var = np.var(returns)
-	auto_corr = np.zeros(k)
-	for i in xrange(1,k):		
-		corr = 0
-		for t in xrange(n-i):
-			corr += ((returns[t] - avg)*(returns[t+i] - avg))
-		auto_corr[i-1] = corr/(var*(n))
-	return auto_corr
+# def auto_corr(returns,k):
+# 	n = len(returns) #total number of points
+# 	avg = np.mean(returns)
+# 	var = np.var(returns)
+# 	auto_corr = np.zeros(k)
+# 	for i in xrange(1,k):		
+# 		corr = 0
+# 		for t in xrange(n-i):
+# 			corr += ((returns[t] - avg)*(returns[t+i] - avg))
+# 		auto_corr[i-1] = corr/(var*(n))
+# 	return auto_corr
 
 
+open_cols   = list(filter(lambda x: 'o1_o0' in x, P.columns))
+open_data = P[open_cols].values
+for i in xrange(319):
+    open_data[:,i] = (open_data[:,i] - np.min(open_data[:,i]))/(np.max(open_data[:,i]) - np.min(open_data[:,i]))
+vol_cols    = list(filter(lambda x: 'vol' in x, P.columns))
+vol_data = P[vol_cols].values
+for i in xrange(319):
+    vol_data[:,i] = (vol_data[:,i] - np.min(vol_data[:,i]))/(np.max(vol_data[:,i]) - np.min(vol_data[:,i]))
+return_cols = list(filter(lambda x: 'return' in x, P.columns))
+return_data = P[return_cols].values
 
 
-mvg_avg = mvg_avg(returns,K)
-auto_corr = auto_corr(returns,lag)
-plot_pacf(returns)
+mov_avg,_ = indicators.mov_avg(K,P)
+rsi= indicators.rsi(P)
+# high = input_data[:,-1,50,1]
+# diff= input_data[:,-1,3,2]
+# mov_avg = indicators.macd(P)
+# auto_corr = auto_corr(returns,lag)
+# print np.any(np.isnan(mov_avg))
+a = 3
+
+result = adfuller(vol_data[:,a])
+print('ADF Statistic: %f' % result[0])
+print('p-value: %f' % result[1])
+for key, value in result[4].items():
+	print('\t%s: %.3f' % (key, value))
+
+
+# plot_acf(high)
+# plt.plot(mov_avg[:,0],'r')
+# plt.plot(signal_line[:,0],'g')
+# plt.plot(diff)
+plt.plot(mov_avg[:,a],'b')
+plt.plot(rsi[:,a],'g')
+plt.plot(open_data[:,a],'r')
+plt.plot(vol_data[:,a],'c')
+plt.plot(np.zeros(rsi.shape))
 plt.show()
 
 
 
+
+
+#date analysis
+#######################
+# dates = [int(time.mktime(datetime.datetime.strptime(s, "%d-%B-%Y").timetuple())) for s in small_date]
+
+# dates.sort()
+
+# dates = [datetime.datetime.fromtimestamp(s).strftime('%d-%B-%Y') for s in dates if s<1483122600 and s>1451500200]
+
+# print dates
+# # print time.mktime(datetime.datetime.strptime("31-December-2015", "%d-%B-%Y").timetuple())
+#########################
 
 
 

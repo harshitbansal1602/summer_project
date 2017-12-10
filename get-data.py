@@ -8,12 +8,17 @@ import pandas as pd
 import time
 import os
 import datetime
+import glob
 
 now = datetime.datetime.now()
 
-data = pd.read_csv("/home/harshit/Desktop/Project_summer/companies_high.csv")
-companies = data['Security Code']
-print companies
+files = glob.glob("csv_high_new(backup)/*.csv")
+def get_ticker(filepath):
+  filepath = filepath[-10:-4]
+  return filepath
+# create a new Firefox session
+companies = [get_ticker(file) for file  in files] 
+
 # create a new Firefox session
 driver = webdriver.Firefox()
 driver.implicitly_wait(5)
@@ -31,7 +36,7 @@ def download(company):
 	date_initial_field.clear()
 	for char in str(company):
 		search_field.send_keys(char)
-		time.sleep(.3)
+		time.sleep(.4)
 
 	list_item = driver.find_elements_by_css_selector('#listEQ>li:first-child')
 	
@@ -42,7 +47,7 @@ def download(company):
 		date_initial_field.send_keys("01/01/2000")
 		driver.execute_script("document.getElementById('ctl00_ContentPlaceHolder1_txtToDate').setAttribute('onkeypress','');")
 		# date_final_field.send_keys(now.strftime("%d/%m/%Y"))
-		date_final_field.send_keys("27/10/2017")
+		date_final_field.send_keys(now.strftime("%d/%m/%Y"))
 		submit.click()
 		element = WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_btnDownload1")))
 		downlaod_pic = driver.find_element_by_id("ctl00_ContentPlaceHolder1_btnDownload1")
@@ -56,6 +61,7 @@ for company in companies:
 	count = 0
 	file_path = "/home/harshit/Downloads/" + str(company) + ".csv"
 	while not os.path.exists(file_path):
+		if os.path.exists('csv_high_new/'+str(company) +'.csv'): break
 		if download(company) == 0:
 			print str(company) + ' not found'
 			break
